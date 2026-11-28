@@ -4086,6 +4086,9 @@ fn (mut t Transformer) ensure_call_param_types_decl_index() {
 	}
 	mut file_name := ''
 	mut module_name := ''
+	// The caches were cleared above and nothing reads them while the keys are
+	// inserted; only the snapshot flag is left to drop when a key is indexed.
+	mut indexed := false
 	use_top_level_index := !isnil(t.tc) && t.tc.top_level_idx.len > 0
 		&& t.tc.top_level_idx_nodes_len == t.a.nodes.len
 	if use_top_level_index {
@@ -4104,11 +4107,17 @@ fn (mut t Transformer) ensure_call_param_types_decl_index() {
 			if node.kind != .fn_decl {
 				continue
 			}
-			t.add_call_param_types_decl_key(node.value, i, file_name, module_name)
-			qname := transform_qualified_fn_name(module_name, node.value)
-			if qname != node.value {
-				t.add_call_param_types_decl_key(qname, i, file_name, module_name)
+			if t.insert_call_param_types_decl_key(node.value, i, file_name, module_name) {
+				indexed = true
 			}
+			qname := transform_qualified_fn_name(module_name, node.value)
+			if qname != node.value
+				&& t.insert_call_param_types_decl_key(qname, i, file_name, module_name) {
+				indexed = true
+			}
+		}
+		if indexed {
+			t.call_param_types_prepared = false
 		}
 		t.call_param_types_index_ready = true
 		return
@@ -4139,11 +4148,16 @@ fn (mut t Transformer) ensure_call_param_types_decl_index() {
 		if node.kind != .fn_decl {
 			continue
 		}
-		t.add_call_param_types_decl_key(node.value, i, file_name, module_name)
-		qname := transform_qualified_fn_name(module_name, node.value)
-		if qname != node.value {
-			t.add_call_param_types_decl_key(qname, i, file_name, module_name)
+		if t.insert_call_param_types_decl_key(node.value, i, file_name, module_name) {
+			indexed = true
 		}
+		qname := transform_qualified_fn_name(module_name, node.value)
+		if qname != node.value && t.insert_call_param_types_decl_key(qname, i, file_name, module_name) {
+			indexed = true
+		}
+	}
+	if indexed {
+		t.call_param_types_prepared = false
 	}
 	t.call_param_types_index_ready = true
 }
@@ -4204,6 +4218,16 @@ fn (mut t Transformer) add_call_param_types_decl_key(key string, idx int, file s
 	t.ensure_private_call_param_types_decl_cache()
 	t.call_param_types_recent = unsafe { nil }
 	t.clear_fn_return_name_cache()
+	t.insert_call_param_types_decl_key(key, idx, file, module_name)
+}
+
+// insert_call_param_types_decl_key indexes the declaration of `key`. It reports
+// whether there was a key. Its caller invalidates what reads the index: the
+// index snapshot and the name caches.
+fn (mut t Transformer) insert_call_param_types_decl_key(key string, idx int, file string, module_name string) bool {
+	if key == '' {
+		return false
+	}
 	if key !in t.call_param_types_decl_index {
 		t.call_param_types_decl_index[key] = FnParamDeclRef{
 			idx:    idx
@@ -4219,6 +4243,7 @@ fn (mut t Transformer) add_call_param_types_decl_key(key string, idx int, file s
 			module: module_name
 		}
 	}
+	return true
 }
 
 fn (mut t Transformer) parse_decl_param_type(typ_id u32, module_name string, file_name string) types.Type {
