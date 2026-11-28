@@ -1,30 +1,20 @@
 module main
 
 import os
-import v.cmdexec
 
 fn test_sumtype_pointer_owners_move_once_and_borrows_remain_copyable() {
 	cc := os.find_abs_path_of_executable('clang') or { return }
 	dir := os.join_path(os.vtmp_dir(), 'sumtype_pointer_ownership_${os.getpid()}')
 	os.mkdir_all(dir)!
 	defer { os.rmdir_all(dir) or {} }
-	project := os.join_path(os.real_path(dir), 'compiler')
 	vlib := os.join_path(@VEXEROOT, 'vlib')
-	// Release V's frontend before Clang compiles the driver.
-	generate := os.exec([@VEXE, '-b', 'c', '-cc', cc, '-gc', 'none', '-d', 'ownership', '-path',
-		vlib, '-generate-c-project', project, os.join_path(vlib, 'v', 'v.v')])
-	assert generate.exit_code == 0, generate.output
-	build := $if windows {
-		cmdexec.run_in_merged('cmd', ['/c', 'build.bat'], project)
-	} $else {
-		cmdexec.run_in_merged('sh', [os.join_path(project, 'build.sh')], project)
-	}
+	// A quick build of the driver costs less than an optimized one for these few dozen
+	// compilations. -prealloc keeps it out of the test runner's shared -prod compiler, so the
+	// driver keeps its assertions.
+	compiler := os.join_path(os.real_path(dir), 'compiler') + $if windows { '.exe' } $else { '' }
+	build := os.exec([@VEXE, '-gc', 'none', '-prealloc', '-d', 'ownership', '-path', vlib, '-o',
+		compiler, os.join_path(vlib, 'v', 'v.v')])
 	assert build.exit_code == 0, build.output
-	compiler := if os.is_file(os.join_path(project, 'v')) {
-		os.join_path(project, 'v')
-	} else {
-		os.join_path(project, 'v.exe')
-	}
 	header := os.join_path(dir, 'drops.h')
 	os.write_file(header, '#include <assert.h>
 static int drop_counts[16];
