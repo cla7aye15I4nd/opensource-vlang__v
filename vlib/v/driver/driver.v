@@ -13650,13 +13650,14 @@ pub fn run(args []string) {
 			prepared_transform_threads << spawn transform.prepare_selfhost_transform(a, &pre_tc, true)
 		}
 		// A convergence pass below re-runs reachability after checking more
-		// library bodies; it reuses the first pass's declaration indexes when the
-		// declarations are unchanged. Both passes copy their results out of
+		// library bodies, and a build with the module cache marks again for the
+		// cached modules; both reuse the first pass's declaration indexes when the
+		// declarations are unchanged. All passes copy their results out of
 		// their arenas before the cache is released. The cache itself must live
 		// in this arena, outside the first pass's disposable one.
 		mut markused_decls := &markused.MarkusedDeclCache(unsafe { nil })
-		if skip_library_bodies && scope_prealloc_markused && !generic_cache_hit
-			&& !library_body_frontiers {
+		if (skip_library_bodies || cache_state.manager.enabled) && scope_prealloc_markused
+			&& !generic_cache_hit && !library_body_frontiers {
 			markused_decls = markused.new_markused_decl_cache()
 		}
 		mut markused_scope := unsafe { nil }
@@ -13699,6 +13700,9 @@ pub fn run(args []string) {
 			}
 		} else if test_files.len > 0 && backend in ['arm64', 'amd64'] {
 			used_fns, uses_generics = markused.mark_used_for_native_tests_with_generic_usage(a, markused_tc, test_files)
+		} else if test_files.len > 0 && !isnil(markused_decls) {
+			used_fns, uses_generics = markused.mark_used_for_tests_with_generic_usage_cached(a,
+				markused_tc, test_files, markused_decls)
 		} else if test_files.len > 0 {
 			used_fns, uses_generics = markused.mark_used_for_tests_with_generic_usage(a, markused_tc, test_files)
 		} else if is_vsh_input {
@@ -13753,7 +13757,13 @@ pub fn run(args []string) {
 				used_fns = markused.mark_used_for_cache_without_generic_detection(a, markused_tc, test_files, cache_state.source_body_modules)
 			} else {
 				mut cache_uses_generics := false
-				used_fns, cache_uses_generics = markused.mark_used_for_cache_with_generic_usage(a, markused_tc, test_files, cache_state.source_body_modules)
+				if isnil(markused_decls) {
+					used_fns, cache_uses_generics = markused.mark_used_for_cache_with_generic_usage(a,
+						markused_tc, test_files, cache_state.source_body_modules)
+				} else {
+					used_fns, cache_uses_generics = markused.mark_used_for_cache_with_generic_usage_cached(a,
+						markused_tc, test_files, cache_state.source_body_modules, markused_decls)
+				}
 				uses_generics = uses_generics || cache_uses_generics
 			}
 		}

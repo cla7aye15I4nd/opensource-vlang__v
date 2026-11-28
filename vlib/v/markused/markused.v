@@ -185,6 +185,16 @@ pub fn mark_all_used_with_generic_usage(a &flat.FlatAst, tc &types.TypeChecker, 
 	return mark_used_with_test_files(a, tc, file_map, map[string]bool{}, false, true, true, true, unsafe { nil }, unsafe { nil }, false, unsafe { nil }, false)
 }
 
+// mark_used_for_tests_with_generic_usage_cached is the decl_cache variant of
+// mark_used_for_tests_with_generic_usage.
+pub fn mark_used_for_tests_with_generic_usage_cached(a &flat.FlatAst, tc &types.TypeChecker, test_files []string, decl_cache &MarkusedDeclCache) (map[string]bool, bool) {
+	mut file_map := map[string]bool{}
+	for file in test_files {
+		file_map[file] = true
+	}
+	return mark_used_with_test_files(a, tc, file_map, map[string]bool{}, false, true, false, true, unsafe { nil }, unsafe { nil }, false, decl_cache, false)
+}
+
 // mark_used_for_cache roots every concrete function in modules being built for the object cache.
 pub fn mark_used_for_cache(a &flat.FlatAst, tc &types.TypeChecker, test_files []string, source_modules map[string]bool) map[string]bool {
 	used, _ := mark_used_for_cache_with_generic_usage(a, tc, test_files, source_modules)
@@ -199,6 +209,16 @@ pub fn mark_used_for_cache_with_generic_usage(a &flat.FlatAst, tc &types.TypeChe
 		file_map[file] = true
 	}
 	return mark_used_with_test_files(a, tc, file_map, source_modules, true, true, false, true, unsafe { nil }, unsafe { nil }, false, unsafe { nil }, false)
+}
+
+// mark_used_for_cache_with_generic_usage_cached is the decl_cache variant of
+// mark_used_for_cache_with_generic_usage.
+pub fn mark_used_for_cache_with_generic_usage_cached(a &flat.FlatAst, tc &types.TypeChecker, test_files []string, source_modules map[string]bool, decl_cache &MarkusedDeclCache) (map[string]bool, bool) {
+	mut file_map := map[string]bool{}
+	for file in test_files {
+		file_map[file] = true
+	}
+	return mark_used_with_test_files(a, tc, file_map, source_modules, true, true, false, true, unsafe { nil }, unsafe { nil }, false, decl_cache, false)
 }
 
 // mark_used_for_cache_without_generic_detection is the self-host cache variant for inputs
@@ -317,6 +337,7 @@ mut:
 	body_ids                     []int
 	body_modules                 []string
 	body_import_contexts         []int
+	body_in_cached_header        []bool // the declaration's file is a cached module header
 	cache_roots                  []string
 	cached_header_enum_str_roots []u32
 	marked_roots                 []string
@@ -328,21 +349,10 @@ mut:
 
 // build_markused_decl_scan indexes every top-level declaration. Its result is a
 // function of the AST, `tc.top_level_idx`, and the checker's file, module and
-// function-file tables only.
-fn build_markused_decl_scan(a &flat.FlatAst, tc &types.TypeChecker, cache_mode bool, cache_modules map[string]bool) MarkusedDeclScan {
+// function-file tables only. A module cache build adds its roots with
+// markused_cache_roots.
+fn build_markused_decl_scan(a &flat.FlatAst, tc &types.TypeChecker) MarkusedDeclScan {
 	has_cached_headers := tc.file_modules.keys().any(it.ends_with('.vh'))
-	// A cached module's object calls into the modules it imports, which the program AST
-	// does not show. When such a module is compiled from source instead of cached (a
-	// module's own tests cache only builtin), its functions are roots too; otherwise the
-	// cached object, linked into a dynamically looked up dylib, calls a pruned function.
-	mut cached_header_imports := map[string]bool{}
-	if cache_mode && has_cached_headers {
-		for key, imported in tc.file_imports {
-			if key.all_before('\n').ends_with('.vh') {
-				cached_header_imports[imported] = true
-			}
-		}
-	}
 	mut result := MarkusedDeclScan{
 		fn_decls:                   map[string]FnDeclInfo{}
 		fn_decl_lists:              map[string][]FnDeclInfo{}
@@ -355,6 +365,7 @@ fn build_markused_decl_scan(a &flat.FlatAst, tc &types.TypeChecker, cache_mode b
 		body_ids:                   []int{cap: 8192}
 		body_modules:               []string{cap: 8192}
 		body_import_contexts:       []int{cap: 8192}
+		body_in_cached_header:      []bool{cap: 8192}
 		convergence_index_complete: true
 	}
 	result.import_contexts << map[string]string{}
@@ -454,6 +465,7 @@ fn build_markused_decl_scan(a &flat.FlatAst, tc &types.TypeChecker, cache_mode b
 				result.body_ids << node_idx
 				result.body_modules << fn_decl_module
 				result.body_import_contexts << fn_decl_import_context
+				result.body_in_cached_header << fn_decl_file.ends_with('.vh')
 			}
 			has_dot := node.value.index_u8(`.`) >= 0
 			can_suffix_match := !markused_fn_decl_is_generic_template(node, a)
@@ -491,17 +503,6 @@ fn build_markused_decl_scan(a &flat.FlatAst, tc &types.TypeChecker, cache_mode b
 			if markused_fn_has_attribute(a, node_idx, 'markused') {
 				result.marked_roots << qname
 			}
-			// Cached headers retain bodies only when the warm pass must recreate
-			// generated specializations or closure support symbols. Root those bodies
-			// even though their ordinary caller can live entirely in another cached
-			// object and therefore be invisible to the program AST.
-			cached_header_body := fn_decl_file.ends_with('.vh') && !node.is_mut
-			cached_dependency_body := cached_header_imports[fn_decl_module]
-				&& !fn_decl_file.ends_with('.vh')
-			if cache_mode && node.kind == .fn_decl && node.generic_params().len == 0
-				&& (cache_modules[fn_decl_module] || cached_header_body || cached_dependency_body) {
-				result.cache_roots << qname
-			}
 			if qname != node.value {
 				add_fn_decl_info(mut result.fn_decls, mut result.fn_decl_lists, qname, info, true)
 				if can_suffix_match {
@@ -533,6 +534,42 @@ fn build_markused_decl_scan(a &flat.FlatAst, tc &types.TypeChecker, cache_mode b
 		}
 	}
 	return result
+}
+
+// markused_cache_roots returns, in declaration order, the functions that a module
+// cache build roots besides the program's own roots.
+fn markused_cache_roots(a &flat.FlatAst, tc &types.TypeChecker, scan &MarkusedDeclScan, cache_modules map[string]bool) []string {
+	// A cached module's object calls into the modules it imports, which the program AST
+	// does not show. When such a module is compiled from source instead of cached (a
+	// module's own tests cache only builtin), its functions are roots too; otherwise the
+	// cached object, linked into a dynamically looked up dylib, calls a pruned function.
+	mut cached_header_imports := map[string]bool{}
+	if tc.file_modules.keys().any(it.ends_with('.vh')) {
+		for key, imported in tc.file_imports {
+			if key.all_before('\n').ends_with('.vh') {
+				cached_header_imports[imported] = true
+			}
+		}
+	}
+	mut roots := []string{}
+	for k, node_idx in scan.body_ids {
+		node := unsafe { &a.nodes[node_idx] }
+		if node.kind != .fn_decl || node.generic_params().len > 0 {
+			continue
+		}
+		fn_decl_module := scan.body_modules[k]
+		in_cached_header := scan.body_in_cached_header[k]
+		// Cached headers retain bodies only when the warm pass must recreate
+		// generated specializations or closure support symbols. Root those bodies
+		// even though their ordinary caller can live entirely in another cached
+		// object and therefore be invisible to the program AST.
+		cached_header_body := in_cached_header && !node.is_mut
+		cached_dependency_body := cached_header_imports[fn_decl_module] && !in_cached_header
+		if cache_modules[fn_decl_module] || cached_header_body || cached_dependency_body {
+			roots << qualify_fn(fn_decl_module, node.value)
+		}
+	}
+	return roots
 }
 
 // MarkusedDeclCache lets a later reachability pass reuse the declaration scan
@@ -591,10 +628,19 @@ fn (cache &MarkusedDeclCache) matches(a &flat.FlatAst, tc &types.TypeChecker) bo
 }
 
 // markused_decl_scan returns the declaration indexes for this pass, reusing or
-// filling `decl_cache` when the caller supplied one.
+// filling `decl_cache` when the caller supplied one. Only the roots of a module
+// cache build depend on the pass.
 fn markused_decl_scan(a &flat.FlatAst, tc &types.TypeChecker, cache_mode bool, cache_modules map[string]bool, decl_cache &MarkusedDeclCache) MarkusedDeclScan {
-	if isnil(decl_cache) || cache_mode || cache_modules.len > 0 {
-		return build_markused_decl_scan(a, tc, cache_mode, cache_modules)
+	mut scan := markused_shared_decl_scan(a, tc, decl_cache)
+	if cache_mode {
+		scan.cache_roots = markused_cache_roots(a, tc, &scan, cache_modules)
+	}
+	return scan
+}
+
+fn markused_shared_decl_scan(a &flat.FlatAst, tc &types.TypeChecker, decl_cache &MarkusedDeclCache) MarkusedDeclScan {
+	if isnil(decl_cache) {
+		return build_markused_decl_scan(a, tc)
 	}
 	mut cache := unsafe { decl_cache }
 	if cache.matches(a, tc) {
@@ -606,7 +652,7 @@ fn markused_decl_scan(a &flat.FlatAst, tc &types.TypeChecker, cache_mode bool, c
 		cache.release()
 	}
 	scope := markused_worker_scope_begin(true)
-	cache.scan = build_markused_decl_scan(a, tc, false, map[string]bool{})
+	cache.scan = build_markused_decl_scan(a, tc)
 	cache.top_level = tc.top_level_idx.clone()
 	markused_worker_scope_leave(scope)
 	cache.scope = scope
