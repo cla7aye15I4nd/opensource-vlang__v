@@ -239,12 +239,14 @@ fn (tc &TypeChecker) list_parallel_check_items(mut p PreparedCheckItems) {
 	mut cur_module := ''
 	mut items := []CheckWorkItem{}
 	mut prev_tl := -1
+	mut in_cache_header := false
 	for i in tc.top_level_idx {
 		node := tc.a.nodes[i]
 		match node.kind {
 			.file {
 				cur_file = node.value
 				cur_module = tc.file_modules[node.value] or { '' }
+				in_cache_header = is_module_cache_header(node.value)
 			}
 			.module_decl {
 				cur_module = node.value
@@ -253,7 +255,8 @@ fn (tc &TypeChecker) list_parallel_check_items(mut p PreparedCheckItems) {
 				}
 			}
 			.fn_decl {
-				if blocking_import_files[cur_file] {
+				// See collect_parallel_check_items.
+				if blocking_import_files[cur_file] || (in_cache_header && node.is_mut) {
 					prev_tl = i
 					continue
 				}

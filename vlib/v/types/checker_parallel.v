@@ -2351,6 +2351,9 @@ fn (mut tc TypeChecker) collect_parallel_check_items() []CheckWorkItem {
 	// A library body is trusted, even an open generic one: it is checked for its
 	// own type parameters, never for the types a program passes to it.
 	library_bodies_trusted := tc.selected_files_only()
+	// A header that the compiler wrote into its module cache declares functions
+	// whose bodies are in the module's object (`is_mut` marks such a declaration).
+	// The module was checked when it was cached; a written .vh still is.
 	mut items := []CheckWorkItem{}
 	// Fn subtrees are contiguous: the fn_decl at index i owns exactly the node
 	// range (previous top-level node, i], so the span doubles as the cost
@@ -2358,17 +2361,19 @@ fn (mut tc TypeChecker) collect_parallel_check_items() []CheckWorkItem {
 	// checks the old walk ran inline live in check_top_level_declarations,
 	// which the parallel flow runs on the master while workers check bodies.
 	mut prev_tl := -1
+	mut in_cache_header := false
 	for i in tc.top_level_idx {
 		node := tc.a.nodes[i]
 		match node.kind {
 			.file {
 				tc.enter_file(node.value)
+				in_cache_header = is_module_cache_header(node.value)
 			}
 			.module_decl {
 				tc.enter_module(node.value)
 			}
 			.fn_decl {
-				if blocking_import_files[tc.cur_file] {
+				if blocking_import_files[tc.cur_file] || (in_cache_header && node.is_mut) {
 					prev_tl = i
 					continue
 				}
