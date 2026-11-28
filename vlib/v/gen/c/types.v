@@ -1321,10 +1321,9 @@ fn (mut g FlatGen) finish_declaration_signature_types() {
 
 fn (mut g FlatGen) collect_checker_declaration_signature_types() {
 	mut seen := &PreseedTypeSeen{}
+	// Most signatures name no option, result or tuple. Rule those out before the
+	// cache demand check, which builds the C names of every checked function.
 	for name, ret in g.tc.fn_ret_types {
-		if g.cache_decl_demand && !g.cache_function_declaration_needed(name) {
-			continue
-		}
 		// Generic template signatures keep unspecialized placeholder types
 		// (`!&Tls[T]`); their typedefs would reference C types that are never
 		// emitted. Specializations register concrete signatures under their
@@ -1335,16 +1334,20 @@ fn (mut g FlatGen) collect_checker_declaration_signature_types() {
 		if name in g.tc.fn_generic_params {
 			continue
 		}
+		if g.cache_decl_demand && !g.cache_function_declaration_needed(name) {
+			continue
+		}
 		if !seen.insert(ret) {
 			continue
 		}
 		g.collect_declaration_signature_type(ret)
 	}
 	for name, params in g.tc.fn_param_types {
-		if g.cache_decl_demand && !g.cache_function_declaration_needed(name) {
+		if name in g.tc.fn_generic_params {
 			continue
 		}
-		if name in g.tc.fn_generic_params {
+		if g.cache_decl_demand && (!types_reach_decl_signature_typedef(params)
+			|| !g.cache_function_declaration_needed(name)) {
 			continue
 		}
 		for param in params {
@@ -1479,6 +1482,17 @@ fn type_reaches_decl_signature_typedef(t &types.Type) bool {
 			false
 		}
 	}
+}
+
+// types_reach_decl_signature_typedef reports whether any of `list` can register a
+// declaration typedef.
+fn types_reach_decl_signature_typedef(list []types.Type) bool {
+	for t in list {
+		if type_reaches_decl_signature_typedef(t) {
+			return true
+		}
+	}
+	return false
 }
 
 fn (mut g FlatGen) collect_selected_declaration_signature_types() {
