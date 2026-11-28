@@ -89,14 +89,6 @@ fn (mut g FlatGen) emit_cache_owned_const(name string, val_id flat.NodeId, owner
 	g.cache_const_definitions[owner] << lines.join('\n') + '\n'
 }
 
-// cache_collect_declaration_refs records C identifiers, excluding comments and
-// literals, so text printed by the program cannot request an unused declaration.
-fn (mut g FlatGen) cache_collect_declaration_refs(source string) {
-	for name, _ in cache_c_identifier_refs(source) {
-		g.cache_decl_refs[name] = true
-	}
-}
-
 @[direct_array_access]
 fn cache_c_skip_literal_or_comment(source string, start int) int {
 	mut i := start
@@ -128,13 +120,14 @@ fn cache_c_skip_literal_or_comment(source string, start int) int {
 	return start
 }
 
+// cache_collect_declaration_refs records C identifiers, excluding comments and
+// literals, so text printed by the program cannot request an unused declaration.
 @[direct_array_access]
-fn cache_c_identifier_refs(source string) map[string]bool {
-	mut refs := map[string]bool{}
+fn (mut g FlatGen) cache_collect_declaration_refs(source string) {
 	mut i := 0
 	// This visits every byte of the generated C: the character tests are spelled out
 	// (TinyCC does not inline helpers), and an identifier is copied only the first
-	// time it is seen.
+	// time it is seen. Only `true` is stored, so a recorded name is never revisited.
 	for i < source.len {
 		c := source[i]
 		if c == `"` || c == `'` || c == `/` {
@@ -157,11 +150,10 @@ fn cache_c_identifier_refs(source string) map[string]bool {
 			}
 		}
 		name := unsafe { tos(source.str + start, i - start) }
-		if name !in refs {
-			refs[name.clone()] = true
+		if name !in g.cache_decl_refs {
+			g.cache_decl_refs[name.clone()] = true
 		}
 	}
-	return refs
 }
 
 struct CacheSupportDefinition {
