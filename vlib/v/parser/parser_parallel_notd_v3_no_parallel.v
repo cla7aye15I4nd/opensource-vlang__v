@@ -1618,10 +1618,12 @@ fn apply_parallel_comptime_const_decls(mut values map[string]string, decls []Com
 // time. Negative child slots (flat.empty_node sentinels) are left untouched.
 struct PendingSourceFile {
 	file_id int
-	file    &token.File
+	file    &token.File // the worker's, which the master clones
 	// The text of the file, when its worker kept it (Parser.keep_source_texts).
 	text     string
 	has_text bool
+	// The text is in the worker's arena, not a buffer that the batch keeps.
+	clone_text bool
 }
 
 struct ParseMergeCopyArgs {
@@ -1724,25 +1726,12 @@ fn parse_merge_copy_thread(arg voidptr) voidptr {
 		// canonical table's insertion order matches the serial merge.
 		mut all_hit := true
 		node.value, all_hit = p.a.probe_text_ptr_cached(node.value, mut value_cache.ptrs, mut value_cache.values)
-		params := node.generic_params()
-		if params.len > 0 {
-			mut canonical_params := []string{cap: params.len}
-			mut params_hit := true
-			for item in params {
-				canonical, item_hit := p.a.probe_text_ptr_cached(item, mut value_cache.ptrs, mut value_cache.values)
-				canonical_params << canonical
-				params_hit = params_hit && item_hit
-			}
-			constraints := node.generic_constraint_ids()
-			if params_hit {
-				// The rebuilt array persists: pool-thread arenas outlive the merge.
-				node.set_generic_params_and_constraint_ids(canonical_params, constraints)
-			} else {
-				all_hit = false
-			}
-		} else if node.enum_backing_type_id() != 0 || node.debugger_value_type_ids().len > 0 || node.has_lowered_type_metadata() {
-			// The payload itself may belong to the retiring parser scope even
-			// when it has no attribute names. The ordered tail copies it too.
+		// A payload belongs to the retiring parser scope, and the ordered tail rebuilds
+		// it on the master. One rebuilt here would be in this pool thread's arena,
+		// which the thread releases when the pool stops after C generation, while the
+		// tree still names the payload.
+		if node.generic_params().len > 0 || node.enum_backing_type_id() != 0
+			|| node.debugger_value_type_ids().len > 0 || node.has_lowered_type_metadata() {
 			all_hit = false
 		}
 		if !all_hit {
@@ -1756,29 +1745,31 @@ fn parse_merge_copy_thread(arg voidptr) voidptr {
 		w.a.nodes.len = 0
 	}
 	if ma.has_scope {
-		// Clone diagnostic line tables while the scoped worker still owns them.
+		// List the diagnostic line tables that leave the scoped worker. The master
+		// clones them while the worker still owns them: a clone made here would be in
+		// this pool thread's arena, which does not last as long as the tree.
 		// A source file does not necessarily have a matching source buffer:
 		// template parsing stores the generated V source separately from the
 		// real template file registered for diagnostic remapping.
 		mut batch := unsafe { &BatchSources(ma.batch) }
 		for file_id, file in w.a.source_files {
-			// The text goes with the line table: both leave the worker's arena here.
+			// The text goes with the line table: both leave the worker's arena.
 			// The text of a file is the buffer that the batch read, which the batch
 			// then leaves to the table of kept texts; any other text (a template's
 			// generated source, a file read by the worker) is in the arena and copied.
 			has_text := file_id in w.a.source_texts
 			mut text := ''
+			mut clone_text := false
 			if has_text {
 				text = w.a.source_texts[file_id]
-				if isnil(batch) || !batch.keep_text(text, ma.batch_start, ma.batch_end) {
-					text = text.clone()
-				}
+				clone_text = isnil(batch) || !batch.keep_text(text, ma.batch_start, ma.batch_end)
 			}
 			ma.pending_files << PendingSourceFile{
-				file_id:  file_id
-				file:     clone_parser_source_file(file)
-				text:     text
-				has_text: has_text
+				file_id:    file_id
+				file:       file
+				text:       text
+				has_text:   has_text
+				clone_text: clone_text
 			}
 		}
 	}
@@ -2084,12 +2075,12 @@ fn (mut p Parser) merge_parsed_worker_bookkeeping(mut w Parser, mut starts []int
 		p.a.template_actions[file_id] = canonical
 	}
 	if use_pending {
-		// Line tables were indexed on the copy thread; only the map inserts
-		// remain order-sensitive.
+		// The copy thread listed the line tables and texts to keep; the copies
+		// belong to the master's arena.
 		for pf in pending_files {
-			p.a.source_files[pf.file_id] = pf.file
+			p.a.source_files[pf.file_id] = clone_parser_source_file(pf.file)
 			if pf.has_text {
-				p.a.source_texts[pf.file_id] = pf.text
+				p.a.source_texts[pf.file_id] = if pf.clone_text { pf.text.clone() } else { pf.text }
 			}
 		}
 	} else if worker_scope == unsafe { nil } {

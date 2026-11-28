@@ -90,3 +90,33 @@ fn test_merge_text_probes_promote_payloads_without_attribute_names() {
 	assert master.a.nodes[1].generic_params().len == 0
 	assert master.a.nodes[1].generic_constraint_ids().len == 0
 }
+
+fn test_merge_leaves_payloads_with_known_names_to_the_ordered_tail() {
+	mut master := Parser.new(pref.new_preferences())
+	mut worker := Parser.new(pref.new_preferences())
+	master.a.intern_text('name')
+	master.a.intern_text('json')
+	unsafe { master.a.nodes.grow_len(1) }
+	scope := parser_worker_scope_begin(true)
+	attrs := flat.node_payload(['json'])
+	worker.a.add_node(flat.Node{
+		kind:    .field_decl
+		value:   'name'
+		payload: attrs
+	})
+	parser_worker_scope_leave(scope)
+	mut args := ParseMergeCopyArgs{
+		master: voidptr(master)
+		worker: voidptr(worker)
+	}
+	// The copy runs on a pool thread, whose arena is released when the pool stops,
+	// before the tree is done with. Even when every text is in the master table, the
+	// master rebuilds the payload.
+	parse_merge_copy_thread(voidptr(&args))
+	assert args.miss_nodes == [0]
+	assert master.a.nodes[0].payload == attrs
+	master.a.intern_node_texts_at(args.miss_nodes)
+	parser_worker_scope_free(scope)
+	assert master.a.nodes[0].payload != attrs
+	assert master.a.nodes[0].generic_params() == ['json']
+}
