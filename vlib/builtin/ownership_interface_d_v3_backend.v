@@ -23,10 +23,12 @@ fn drop_owned_interface[T](value T) {
 	drop_owned_v3_interface(value)
 }
 
-fn drop_owned_result_error_interface(err IError) {
-	// Pointer-backed errors remain borrowed; only boxed concrete values are owned.
-	// Destroying one takes a branch for every error type of the program. That code
-	// is generated for the program, as an instance of the generic function, so
-	// that the object of this module is the same for every program.
+// drop_owned_result_error_interface destroys a boxed error. Pointer-backed errors
+// remain borrowed; only boxed concrete values are owned. Destroying one takes a
+// branch for every error type of the program, so that code is generated for the
+// program, as an instance of the generic function. This function is generic as
+// well (`E` is always IError): the object of this module then neither differs
+// between programs nor needs an instance from a program that drops no error.
+fn drop_owned_result_error_interface[E](err IError) {
 	drop_owned_interface(err)
 }

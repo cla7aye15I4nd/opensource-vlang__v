@@ -18,7 +18,9 @@ fn drop_owned_interface[T](value T) {
 	}
 }
 
-fn drop_owned_result_error_interface(err IError) {
+// drop_owned_result_error_interface is generic only to match the v3 variant; `E` is
+// always IError.
+fn drop_owned_result_error_interface[E](err IError) {
 	mut owned := err
 	payload := unsafe { (&OwnershipRegularInterfacePayload(&owned)).payload }
 	if mut owned is OwnershipDrop {

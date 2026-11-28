@@ -5,7 +5,10 @@ struct OwnershipIErrorPayload {
 	payload voidptr
 }
 
-fn drop_owned_result_error(err IError) {
+// drop_owned_result_error destroys the error of an option or result. It is generic
+// (`E` is always IError) so that only a program that drops one instantiates it,
+// with drop_owned_result_error_interface.
+fn drop_owned_result_error[E](err IError) {
 	raw_err := unsafe { &OwnershipIErrorPayload(&err) }
 	none_err := unsafe { &OwnershipIErrorPayload(&none__) }
 	sentinel_err := unsafe { &OwnershipIErrorPayload(&error_sentinel) }
@@ -17,7 +20,7 @@ fn drop_owned_result_error(err IError) {
 	if raw_err.payload == none_err.payload || raw_err.payload == sentinel_err.payload {
 		return
 	}
-	drop_owned_result_error_interface(err)
+	drop_owned_result_error_interface[IError](err)
 }
 
 fn drop_owned_map_key[K](key K) {
@@ -41,7 +44,7 @@ pub fn drop_owned[T](value T) {
 		if payload := owned {
 			drop_owned(payload)
 		} else {
-			drop_owned_result_error(owned.err)
+			drop_owned_result_error[IError](owned.err)
 		}
 	} $else $if T.unaliased_typ is $sumtype {
 		$for variant in T.variants {
@@ -73,7 +76,7 @@ pub fn drop_owned[T](value T) {
 		if payload := owned {
 			drop_owned(payload)
 		} else {
-			drop_owned_result_error(owned.err)
+			drop_owned_result_error[IError](owned.err)
 		}
 	} $else $if T.unaliased_typ is $struct {
 		$for field in T.fields {
