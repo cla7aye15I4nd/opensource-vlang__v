@@ -18187,9 +18187,14 @@ fn prune_cache_only_function_prototypes(source string, cache_used_fns &map[strin
 		return source
 	}
 	mut out := strings.new_builder(source.len)
-	for line in source.split_into_lines() {
-		trimmed := line.trim_space()
-		if trimmed.ends_with(');') {
+	mut start := 0
+	for start < source.len {
+		end, next := c_source_line_bounds(source, start)
+		// A view of the line: only a prototype is copied to be looked up.
+		line := unsafe { tos(source.str + start, end - start) }
+		start = next
+		if c_source_line_ends_with_call_end(line) {
+			trimmed := line.trim_space()
 			open := trimmed.index_u8(`(`)
 			if open > 0 {
 				fn_name := trimmed[..open].all_after_last(' ').trim_left('*')
@@ -18198,9 +18203,45 @@ fn prune_cache_only_function_prototypes(source string, cache_used_fns &map[strin
 				}
 			}
 		}
-		out.writeln(line)
+		out.write_string(line)
+		out.write_u8(`\n`)
 	}
 	return out.str()
+}
+
+// c_source_line_bounds returns the end of the line of `source` that starts at
+// `start`, and the start of the next line. Lines end at `\n`, `\r\n` and `\r`,
+// as split_into_lines splits them.
+fn c_source_line_bounds(source string, start int) (int, int) {
+	rest := unsafe { tos(source.str + start, source.len - start) }
+	newline := rest.index_u8(`\n`)
+	end := if newline < 0 { source.len } else { start + newline }
+	line := unsafe { tos(source.str + start, end - start) }
+	carriage := line.index_u8(`\r`)
+	if carriage >= 0 {
+		line_end := start + carriage
+		if line_end + 1 < source.len && source[line_end + 1] == `\n` {
+			return line_end, line_end + 2
+		}
+		return line_end, line_end + 1
+	}
+	return end, if newline < 0 { source.len } else { end + 1 }
+}
+
+// c_source_line_last_byte returns the position of the last byte of `line` that is
+// not whitespace, or -1.
+fn c_source_line_last_byte(line string) int {
+	mut last := line.len - 1
+	for last >= 0 && (line[last] == ` ` || (line[last] >= `\t` && line[last] <= `\r`)) {
+		last--
+	}
+	return last
+}
+
+// c_source_line_ends_with_call_end reports whether `line`, trimmed, ends with `);`.
+fn c_source_line_ends_with_call_end(line string) bool {
+	last := c_source_line_last_byte(line)
+	return last >= 1 && line[last] == `;` && line[last - 1] == `)`
 }
 
 // cache_function_reference_counts counts, up to 2, the identifiers of `source` that are
@@ -18209,6 +18250,22 @@ fn prune_cache_only_function_prototypes(source string, cache_used_fns &map[strin
 @[direct_array_access]
 fn cache_function_reference_counts(source string, candidates map[string]bool) map[string]u8 {
 	mut counts := map[string]u8{}
+	// Only a token with the length and the first byte of a candidate is looked up.
+	mut min_len := max_int
+	mut max_len := 0
+	mut first_bytes := [256]bool{}
+	for name, _ in candidates {
+		if name.len == 0 {
+			continue
+		}
+		if name.len < min_len {
+			min_len = name.len
+		}
+		if name.len > max_len {
+			max_len = name.len
+		}
+		first_bytes[name[0]] = true
+	}
 	mut start := -1
 	for i := 0; i <= source.len; i++ {
 		if i < source.len {
@@ -18224,9 +18281,12 @@ fn cache_function_reference_counts(source string, candidates map[string]bool) ma
 		if start < 0 {
 			continue
 		}
-		token := unsafe { tos(source.str + start, i - start) }
-		if candidates[token] && counts[token] < 2 {
-			counts[token]++
+		token_len := i - start
+		if token_len >= min_len && token_len <= max_len && first_bytes[source[start]] {
+			token := unsafe { tos(source.str + start, token_len) }
+			if candidates[token] && counts[token] < 2 {
+				counts[token]++
+			}
 		}
 		start = -1
 	}
@@ -18291,32 +18351,47 @@ fn prune_cached_native_function_prototypes(source string, state &V3ModuleCacheSt
 			}
 		}
 	}
-	lines := source.split_into_lines()
 	mut out := strings.new_builder(source.len)
-	mut i := 0
-	for i < lines.len {
-		line := lines[i]
-		if line.trim_space() == '#ifndef V3CACHE_PROGRAM_UNIT' && i + 2 < lines.len
-			&& lines[i + 2].trim_space() == '#endif' {
-			name := cached_native_function_prototype_name(lines[i + 1])
-			if name.len > 0 {
-				if !declared_functions[name] {
-					out.writeln(lines[i + 1])
+	mut start := 0
+	for start < source.len {
+		end, next := c_source_line_bounds(source, start)
+		// Views of the lines; the source outlives the walk.
+		line := unsafe { tos(source.str + start, end - start) }
+		if next < source.len && line.trim_space() == '#ifndef V3CACHE_PROGRAM_UNIT' {
+			middle_end, middle_next := c_source_line_bounds(source, next)
+			if middle_next < source.len {
+				last_end, last_next := c_source_line_bounds(source, middle_next)
+				last := unsafe { tos(source.str + middle_next, last_end - middle_next) }
+				if last.trim_space() == '#endif' {
+					middle := unsafe { tos(source.str + next, middle_end - next) }
+					name := cached_native_function_prototype_name(middle)
+					if name.len > 0 {
+						if !declared_functions[name] {
+							out.write_string(middle)
+							out.write_u8(`\n`)
+						}
+						start = last_next
+						continue
+					}
 				}
-				i += 3
-				continue
 			}
 		}
 		name := cached_native_function_prototype_name(line)
 		if name.len == 0 || !declared_functions[name] {
-			out.writeln(line)
+			out.write_string(line)
+			out.write_u8(`\n`)
 		}
-		i++
+		start = next
 	}
 	return out.str()
 }
 
 fn cached_native_function_prototype_name(line string) string {
+	// Most lines are not statements; rule them out before trimming a copy.
+	last := c_source_line_last_byte(line)
+	if last < 0 || line[last] != `;` {
+		return ''
+	}
 	clean := line.trim_space()
 	if !clean.ends_with(';') || !clean.contains('(') || clean.starts_with('#') {
 		return ''

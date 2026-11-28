@@ -602,3 +602,33 @@ fn test_prune_cached_native_function_prototypes_resolves_cache_guards() {
 	assert pruned.contains('int library_api(void);')
 	assert !pruned.contains('V3CACHE_PROGRAM_UNIT')
 }
+
+fn test_prune_cached_native_function_prototypes_keeps_line_breaks_of_split_into_lines() {
+	state := &V3ModuleCacheState{
+		native_declared_functions: {
+			'owner': {
+				'active_api': true
+			}
+		}
+	}
+	// `\r\n` and a lone `\r` end lines too; every kept line ends with `\n`, the last
+	// one included, and a guard is resolved even when it closes the source.
+	source := 'int a;\r\nint active_api(void);\r\n\n  int b(void) ;  \rint c(void);\n#ifndef V3CACHE_PROGRAM_UNIT\nint library_api(void);\n#endif'
+	pruned := prune_cached_native_function_prototypes(source, state, ['owner'])
+	assert pruned == 'int a;\n\n  int b(void) ;  \nint c(void);\nint library_api(void);\n'
+	// A guard that does not hold a prototype stays as it is.
+	kept := '#ifndef V3CACHE_PROGRAM_UNIT\n#define X 1\n#endif\nint active_api(void);'
+	assert prune_cached_native_function_prototypes(kept, state, ['owner']) == '#ifndef V3CACHE_PROGRAM_UNIT\n#define X 1\n#endif\n'
+	assert prune_cached_native_function_prototypes('', state, ['owner']) == ''
+}
+
+fn test_cache_function_reference_counts_looks_up_only_candidate_shapes() {
+	candidates := {
+		'alpha__one': true
+		'b':          true
+	}
+	counts := cache_function_reference_counts('alpha__one alpha__onex xalpha__one b bb b_ ab b', candidates)
+	assert counts['alpha__one'] == 1
+	assert counts['b'] == 2
+	assert counts.len == 2
+}
