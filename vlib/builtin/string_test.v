@@ -1853,6 +1853,55 @@ fn test_index_empty_needle() {
 	assert ''.index('a') == none
 }
 
+// naive_index is the reference for the long-needle search below.
+fn naive_index(s string, p string) int {
+	for i := 0; i + p.len <= s.len; i++ {
+		if s[i..i + p.len] == p {
+			return i
+		}
+	}
+	return -1
+}
+
+fn test_index_long_needles() {
+	// Needles over 16 bytes skip to their rarest byte and fall back to KMP when
+	// the candidates keep failing; both must find the first match.
+	marker := '\n#define V_MANUAL_STDLIB_HEADERS 1\n'
+	source := '#define A 1\n#define V_MANUAL 2\n#define V_MANUAL_STDLIB_HEADERS 1\nint x;\n'
+	assert source.index_(marker) == naive_index(source, marker)
+	assert source.index_(marker) > 0
+	assert !source.contains(marker + 'x')
+	assert marker.index_(marker) == 0
+	needle := 'a'.repeat(19) + 'b'
+	periodic := 'a'.repeat(20000)
+	assert periodic.index_(needle) == -1
+	assert (periodic + needle).index_(needle) == 20000
+	assert ('b' + periodic + needle + needle).index_(needle) == 20001
+	spaced := ' '.repeat(5000) + '  x' + ' '.repeat(16)
+	assert spaced.index_(' '.repeat(16) + 'x') == 4986
+	assert spaced.index_('x' + ' '.repeat(16)) == 5002
+	mut seed := u32(12345)
+	for round in 0 .. 400 {
+		// A two- or three-letter alphabet makes partial matches frequent.
+		alphabet := if round % 2 == 0 { 'ab' } else { 'a \n' }
+		mut text := []u8{}
+		text_len := 24 + int(seed % 300)
+		for _ in 0 .. text_len {
+			seed = seed * 1103515245 + 12345
+			text << alphabet[int((seed >> 16) % u32(alphabet.len))]
+		}
+		hay := text.bytestr()
+		seed = seed * 1103515245 + 12345
+		needle_len := 17 + int((seed >> 16) % 8)
+		seed = seed * 1103515245 + 12345
+		from := int((seed >> 16) % u32(hay.len - needle_len + 1))
+		inside := hay[from..from + needle_len]
+		assert hay.index_(inside) == naive_index(hay, inside)
+		outside := inside[..needle_len - 1] + 'c'
+		assert hay.index_(outside) == -1
+	}
+}
+
 fn test_last_index_empty_needle() {
 	for s in ['abc', '', 'é🙂', string{}] {
 		for needle in ['', string{}] {

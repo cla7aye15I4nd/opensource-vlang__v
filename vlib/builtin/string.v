@@ -1556,7 +1556,7 @@ pub fn (s string) index_(p string) int {
 @[direct_array_access]
 fn (s string) index_multibyte(p string) int {
 	if p.len > max_direct_index_needle_len {
-		return s.index_kmp(p)
+		return s.index_long(p)
 	}
 	if p.len == 2 {
 		return s.index_two_bytes(p)
@@ -1586,9 +1586,69 @@ fn (s string) index_two_bytes(p string) int {
 	return string_index_pair(s.str, s.len, unsafe { p.str[0] }, unsafe { p.str[1] })
 }
 
-// Needles up to this length are searched directly; longer ones use KMP, which
-// keeps the search linear in `s.len` whatever the needle.
+// Needles up to this length are searched directly; longer ones by index_long,
+// which stays linear in `s.len` whatever the needle.
 const max_direct_index_needle_len = 16
+
+// index_long finds a needle longer than max_direct_index_needle_len. It skips
+// with memchr to the positions where the rarest-looking byte of the needle
+// matches, and compares the needle there. Long needles usually start with a
+// space, a newline or a common letter, which would stop the skip every few
+// bytes. Once the compares cost more than the bytes they skipped, KMP finishes
+// the search, so a needle that matches almost everywhere stays linear.
+@[direct_array_access]
+fn (s string) index_long(p string) int {
+	mut anchor := 0
+	mut anchor_rank := string_search_byte_rank(unsafe { p.str[0] })
+	for k := 1; k < p.len && anchor_rank > 0; k++ {
+		rank := string_search_byte_rank(unsafe { p.str[k] })
+		if rank < anchor_rank {
+			anchor = k
+			anchor_rank = rank
+		}
+	}
+	anchor_byte := unsafe { p.str[anchor] }
+	last_start := s.len - p.len
+	mut start := 0
+	mut compared := 0
+	for start <= last_start {
+		// A match at `start` has the anchor byte at `start + anchor`.
+		next := string_index_byte(unsafe { s.str + start + anchor }, last_start - start + 1,
+			anchor_byte)
+		if next < 0 {
+			return -1
+		}
+		start += next
+		if string_bytes_equal(unsafe { s.str + start }, p.str, p.len) {
+			return start
+		}
+		compared += p.len
+		if compared > 2 * start + 4096 {
+			rest := unsafe { tos(s.str + start + 1, s.len - start - 1) }
+			i := rest.index_kmp(p)
+			return if i < 0 { -1 } else { start + 1 + i }
+		}
+		start++
+	}
+	return -1
+}
+
+// string_search_byte_rank orders bytes by how often they occur in text and
+// source code: 0 for the rare ones, 3 for whitespace.
+@[inline]
+fn string_search_byte_rank(c u8) int {
+	if c == ` ` || c == `\n` || c == `\t` || c == `\r` {
+		return 3
+	}
+	if c >= `a` && c <= `z` {
+		return 2
+	}
+	if c == `_` || c == `(` || c == `)` || c == `;` || c == `,` || c == `.` || c == `*`
+		|| c == `=` || c == `"` || c == `'` {
+		return 1
+	}
+	return 0
+}
 
 // index returns the position of the first character of the first occurrence of the `needle` string in `s`.
 // It will return `none` if the `needle` string can't be found in `s`.
