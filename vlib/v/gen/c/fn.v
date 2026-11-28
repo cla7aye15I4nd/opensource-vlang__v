@@ -17729,6 +17729,12 @@ fn (mut g FlatGen) emit_c_runtime_declarations(required []string) {
 
 fn (mut g FlatGen) c_extern_forward_decls() {
 	if g.native_function_aliases.len > 0 { g.writeln('#define V3CACHE_NATIVE_BINDINGS 1') }
+	// Writing the declarations adds no C directive. Answer the directive scan
+	// once instead of several times for every declaration.
+	g.extern_decls_system_libc = if g.c_directives_use_system_libc() { i8(2) } else { i8(1) }
+	defer {
+		g.extern_decls_system_libc = 0
+	}
 	mut cur_module := 'main'
 	mut cur_file := ''
 	mut decls := map[string]CExternForwardDecl{}

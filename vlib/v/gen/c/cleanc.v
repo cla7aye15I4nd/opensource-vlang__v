@@ -1002,6 +1002,7 @@ mut:
 	cache_const_declarations       map[string]string
 	cache_decl_refs                map[string]bool
 	cache_decl_demand              bool
+	extern_decls_system_libc       i8 // c_directives_use_system_libc() in c_extern_forward_decls: 1 no, 2 yes
 	cache_pruned_fn_names          []string
 	cache_pruned_fn_modules        []string
 	cache_pruned_fn_refs           []string
@@ -21149,6 +21150,9 @@ fn (g &FlatGen) headerless_compiler_bootstrap() bool {
 }
 
 fn (g &FlatGen) c_directives_use_system_libc() bool {
+	if g.extern_decls_system_libc != 0 {
+		return g.extern_decls_system_libc == 2
+	}
 	// A freestanding target has no hosted libc to include, whatever the program's
 	// own `#include`s name. Those includes are the project's own headers -- a
 	// kernel compiling with `-nostdinc` against its own tree -- so treating any
